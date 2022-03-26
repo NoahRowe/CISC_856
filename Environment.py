@@ -11,8 +11,8 @@ class cryptoTrade(gym.Env):
 
     def __init__(self) -> None:
         super(cryptoTrade,self).__init__()
-        self.n = 10
-        self.k = 10
+        self.n = 10 # action range
+        self.k = 10 # Observation range
         self.action_space = spaces.Discrete(2*self.n+1)
         self.action_space = np.linspace(-self.n,self.n,num=2*self.n+1)
         self.observation_space = spaces.Box(low=0,high=np.inf,shape=(self.k,7))
@@ -34,6 +34,7 @@ class cryptoTrade(gym.Env):
         else: #sell 
             self.CurrentBalance += action*self.observation_space[self.k-1][4]
         count = 0
+        #Shift observation forward one day
         for i in range(self.currentday-self.k,self.currentday+self.k):
             for j in  range(7):
                 if j == 6:
