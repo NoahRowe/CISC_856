@@ -4,64 +4,93 @@ import gym
 import numpy as np
 from gym import spaces
 import csv
+import pandas as pd
 
 
 class cryptoTrade(gym.Env):
     metadata = {'render.modes':['human']}
 
-    def __init__(self) -> None:
+    def __init__(self, data_path) -> None:
         super(cryptoTrade,self).__init__()
+        
         self.n = 10 # action range
-        self.k = 10 # Observation range
-        self.action_space = spaces.Discrete(2*self.n+1)
+        self.lookback_period = 10 # Observation range
+        
+        # Define features we will lookback on
+        self.dim_2_features = ["unix", "low", "high", "open", "close", "volume", "vol_fiat"]
+        self.dim_1_features = ["num_shares", "net_worth"]
+        
         self.action_space = np.linspace(-self.n,self.n,num=2*self.n+1)
-        self.observation_space = spaces.Box(low=0,high=np.inf,shape=(self.k,7))
-        self.currentday = self.k
+        
+        self.dim_2_observation_space = np.zeros((len(self.dim_2_features), self.lookback_period))
+        self.dim_1_observation_space = np.zeros(len(self.dim_1_features))
+        
+        # Total observation space will be ragged tensor of dim_1 and dim_2 observations
+        self.observation_space = [0 for _ in range(len(self.dim_1_observation_space)+len(self.dim_2_observation_space))]
+        
+        self.currentday = self.lookback_period
         self.CurrentBalance = 1000
         self.CurrentShares = 0
-        with open('data/Coinbase_BTCUSD_dailydata.csv') as csv_file:
-            self.csv_reader = csv.reader(csv_file, delimiter=',')
+        
+        self.data = pd.read_csv(data_path)
+        
     
     def step(self, action):
+        
         done = False
         self.CurrentShares += action
         self.currentday += 1
-        #Calculate Reward
-        reward = self.CurrentShares*(self.csv_reader[self.currentday][4] - self.observation_space[self.k-1][4])
-        #Adjust current balance based on action 
-        if action > 0: #buy
-            self.CurrentBalance -= action*self.observation_space[self.k-1][4]
-        else: #sell 
-            self.CurrentBalance += action*self.observation_space[self.k-1][4]
-        count = 0
-        #Shift observation forward one day
-        for i in range(self.currentday-self.k,self.currentday+self.k):
-            for j in  range(7):
-                if j == 6:
-                    self.observation_space[count][j] = self.csv_reader[i][j+1]
-                else:
-                    self.observation_space[count][j] = self.csv_reader[i][j]
-            count += 1
-        return self.observation_space,reward,done
+        
+        self.yesterday_price = self.data['close'].iloc[self.currentday-1]
+        self.today_price = self.data['close'].iloc[self.currentday]
+        
+        # Calculate Reward (based on today's price)
+        reward = self.today_price * self.CurrentShares
+        
+        # Adjust current balance based on action (bought with this action yesterday)
+        self.CurrentBalance -= action * self.yesterday_price # Will account for selling w negative
+        
+        # Shift observation forward one day
+        self.update_array_observations()
+        
+        return self.observation_space, reward, done
     
     def render(self):
         return 
     
     def valid(self,action):
-        if action*self.observation_space[self.k-1][4]>self.CurrentBalance:
-            return False
-        else:
-            return True
+        return action*self.observation_space[self.k-1][4]<self.CurrentBalance
+    
+    def update_array_observations(self):
+        self.update_dim_1_observations()
+        self.update_dim_2_observations()
+        
+        # Combine them together
+        num_dim_1_features = len(self.dim_1_observation_space)
+        num_dim_2_features = len(self.dim_2_observation_space)
+        
+        for i in range(num_dim_1_features):
+            self.observation_space[i] = self.dim_1_observation_space[i]
+        
+        for i in range(num_dim_2_features):
+            self.observation_space[i+num_dim_1_features] = self.dim_2_observation_space[i].tolist()
+                
+    def update_dim_1_observations(self):
+        
+        self.dim_1_observation_space[0] = self.CurrentShares
+        self.dim_1_observation_space[1] = self.CurrentBalance
+        
+    def update_dim_2_observations(self):
+        
+        start_index, end_index = self.currentday-self.lookback_period, self.currentday
+        for i, feature in enumerate(self.dim_2_features):
+            self.dim_2_observation_space[i] = self.data[feature].iloc[start_index:end_index].values
     
     def reset(self):
         self.CurrentBalance = 1000
-        self.currentday = self.k
+        self.currentday = self.lookback_period
         self.CurrentShares = 0
         
-        for i in range(self.k):
-            for j in range(7):
-                if j==6:
-                    self.observation_space[i][j] = self.csv_reader[i+1][j+1]
-                else:
-                    self.observation_space[i][j] = self.csv_reader[i+1][j]
-        return self.observation_space
+        self.update_array_observations()
+
+        # return self.observation_space
