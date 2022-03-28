@@ -35,9 +35,11 @@ class cryptoTrade(gym.Env):
         self.data = pd.read_csv(data_path)
         
     
-    def step(self, action):
-        
-        done = False
+    def step(self, raw_action):
+
+        # Map the action to num of shares
+        action = self.action_space[int(raw_action)]
+
         self.CurrentShares += action
         self.currentday += 1
         
@@ -51,15 +53,21 @@ class cryptoTrade(gym.Env):
         self.CurrentBalance -= action * self.yesterday_price # Will account for selling w negative
         
         # Shift observation forward one day
-        self.update_array_observations()
+        # self.update_array_observations()
+        
+        # Check if done
+        done = self.is_done()
         
         return self.observation_space, reward, done
+    
+    def is_done(self):
+        return self.currentday >= self.data.shape[0]-1
     
     def render(self):
         return 
     
     def valid(self,action):
-        return action*self.observation_space[self.k-1][4]<self.CurrentBalance
+        return action*self.observation_space[self.k-1][4] < self.CurrentBalance
     
     def update_array_observations(self):
         self.update_dim_1_observations()
@@ -93,4 +101,4 @@ class cryptoTrade(gym.Env):
         
         self.update_array_observations()
 
-        # return self.observation_space
+        return self.observation_space
