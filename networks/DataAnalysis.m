@@ -5,9 +5,9 @@ clear all;
 %% Initialization
 %fileID = fopen('20211022_10000ConPreplaced.txt');
 %fileID = fopen('20211025_10000ConPreplaced05AplphaShifted.txt'); % Good Run!
-fileID = fopen('20220329_RNNTraining.txt');
+fileID = fopen('20220330_RNNTraining.txt');
 data = fscanf(fileID,'%f');
-n = 200; %Number of Episodes for the run
+n = 300; %Number of Episodes for the run
 %maxr = 10; %maximum reward
 
 %% Raw Data
