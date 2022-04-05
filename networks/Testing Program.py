@@ -59,7 +59,8 @@ for episode in range(300):
         total_training_rewards += reward
         
         if done:
-            print('Total training rewards: {} after n steps = {} with final reward = {}'.format(total_training_rewards, episode, reward))
+            print('Total training rewards: {} after n steps = {} with final reward = {}'.format(
+                total_training_rewards, episode, reward))
             #total_training_rewards += 1
             txt = "{:.2f}\n"
             
