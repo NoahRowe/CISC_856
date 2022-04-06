@@ -1,28 +1,35 @@
 #Stock trading environement
-
-import gym
+import itertools
+import time
 import numpy as np
-from gym import spaces
-import csv
 import pandas as pd
+import gym
+from gym import spaces
+
+from data.feature_creation import add_moving_mean, add_moving_max, add_moving_min
 
 
 class cryptoTrade(gym.Env):
-    metadata = {'render.modes':['human']}
 
-    def __init__(self, data_path) -> None:
+
+    def __init__(self, data_path, episode_size=60) -> None:
         super(cryptoTrade, self).__init__()
         
-        self.n = 10 # action range
-        self.lookback_period = 10 # Observation range
         self.init_bankroll = 1e6
+        self.episode_size = episode_size
         
-        # Define features we will lookback on
-        self.dim_2_features = ["low", "high", "open", "close", "volume", "vol_fiat"]
+        self.n = 10 # Max buy or sell amount
+        self.action_space = np.linspace(-self.n, self.n, num=2*self.n+1, dtype=int)
+        
+        self.lookback_period = 10 # Observation range
+        
+        # Define core features
+        self.dim_2_features = ["open", "high", "low",  "close", "volume"]
         self.dim_1_features = ["num_shares", "buying_power", "net_worth", 
                                "avg_held_share_price", "held_shares_value"]
         
-        self.action_space = np.linspace(-self.n, self.n, num=2*self.n+1, dtype=int)
+        self.raw_data = pd.read_pickle(data_path)
+        self.preprocess_data()
         
         self.dim_1_observation_space = np.zeros(len(self.dim_1_features))
         self.dim_2_observation_space = np.zeros((len(self.dim_2_features), self.lookback_period))
@@ -30,24 +37,39 @@ class cryptoTrade(gym.Env):
         # Total observation space will be ragged tensor of dim_1 and dim_2 observations
         self.observation_space = [0 for _ in range(len(self.dim_1_observation_space)+len(self.dim_2_observation_space))]
         
-        self.current_day = self.lookback_period
-        self.buying_power = self.init_bankroll
-        self.net_worth = self.buying_power
-        self.total_profit = 0
-        self.shares_held = []
-        
-        self.data = pd.read_csv(data_path)
-        
-        self.today_price = self.data['close'].iloc[self.current_day]
-        
         # Make sure the observations represent the first day
         self.reset()
+
         
+    def preprocess_data(self):
+        
+        data = self.raw_data
+        
+        # Define the columns we want to add
+        column_vals = self.dim_2_features
+        window_vals = [5, 10, 100, 500, 3600] # In minutes
+        
+        for col, window in itertools.product(column_vals, window_vals):
+            # Add moving average of all columns
+            data, new_feature = add_moving_mean(data, col, window)
+            self.dim_2_features.append(new_feature)
+            # Add moving max of all columns
+            data, new_feature = add_moving_min(data, col, window)
+            self.dim_2_features.append(new_feature)
+            # Add moving min of all columns
+            data, new_feature = add_moving_max(data, col, window)
+            self.dim_2_features.append(new_feature)
+        
+        # Remove missing data
+        data.dropna(inplace=True)
+        
+        self.data = data
+
     
     def step(self, raw_action):
         
         # Update the pricing variables
-        self.today_price = self.data['close'].iloc[self.current_day]
+        self.close_price = self.data['close'].iloc[self.current_index]
 
         # Map the action to num of shares
         action = self.action_space[int(raw_action)]
@@ -63,26 +85,24 @@ class cryptoTrade(gym.Env):
         self.update_net_worth()
         
         # Shift observation forward one day
-        self.current_day += 1
+        self.current_index += 1
         self.update_array_observations()
         
         # Check if done
         done = self.is_done()
         
         return valid_action, self.observation_space, self.total_profit, done
+
     
     def get_valid_action(self, action):
         
         # Trying to buy shares
         if action>0:
-            if self.today_price*action > self.buying_power: 
-                # Can't afford all the shares, buy as many as possible
-                return int(self.buying_power//self.today_price)
-                
-        # Trying to sell shares
+            if self.close_price*action > self.buying_power: 
+                return int(self.buying_power//self.close_price)
+
         elif action<0:
             if len(self.shares_held) < np.abs(action):
-                # Trying to sell too many shares, sell all of them
                 return len(self.shares_held)
 
         return action
@@ -92,39 +112,26 @@ class cryptoTrade(gym.Env):
         # Have already checked that the given action is valid
         # Will also return the reward (sell_price-buy_price)
 
-        self.buying_power -= self.today_price*action
+        self.buying_power -= self.close_price*action
         
         if action > 0:
-            
             #### BUY ####
             for _ in range(action):
-                self.shares_held.append(self.today_price)
+                self.shares_held.append(self.close_price)
             return 0
             
         elif action < 0:
-            
             #### SELL ####
             purchase_price = 0
             for _ in range(np.abs(action)):
                 purchase_price += self.shares_held.pop(0)
-            return self.today_price*np.abs(action) - purchase_price
+            return self.close_price*np.abs(action) - purchase_price # Scaled profit
                 
         else:
             #### NOTHING ####
             return 0
-        
-    def update_net_worth(self):
-        self.net_worth = self.buying_power + self.today_price*len(self.shares_held)
-    
-    def is_done(self):
-        return self.current_day >= self.data.shape[0]-1
-    
-    def render(self):
-        return 
-    
-    def valid(self,action):
-        return action*self.observation_space[self.k-1][4] < self.buying_power
-    
+
+
     def update_array_observations(self):
         self.update_dim_1_observations()
         self.update_dim_2_observations()
@@ -139,32 +146,48 @@ class cryptoTrade(gym.Env):
         for i in range(num_dim_2_features):
             self.observation_space[i+num_dim_1_features] = self.dim_2_observation_space[i].tolist()
                 
+
     def update_dim_1_observations(self):
         
         self.dim_1_observation_space[0] = len(self.shares_held)
-        self.dim_1_observation_space[1] = self.buying_power
-        self.dim_1_observation_space[2] = self.net_worth
+        self.dim_1_observation_space[1] = self.buying_power/self.init_bankroll
+        self.dim_1_observation_space[2] = self.net_worth/self.init_bankroll
         self.dim_1_observation_space[3] = np.mean(self.shares_held) if len(self.shares_held)>0 else 0
-        self.dim_1_observation_space[4] = len(self.shares_held) * self.today_price
-        
+        self.dim_1_observation_space[4] = len(self.shares_held) * self.close_price
+
+
     def update_dim_2_observations(self):
         
-        start_index, end_index = self.current_day-self.lookback_period, self.current_day
+        start_index, end_index = self.current_index-self.lookback_period, self.current_index
         for i, feature in enumerate(self.dim_2_features):
             self.dim_2_observation_space[i] = self.data[feature].iloc[start_index:end_index].values
+
     
     def reset(self):
+        
+        # Randomly choose somewhere in the data to iterate over for this episode
+        self.current_index = np.random.randint(self.lookback_period, len(self.data)-self.episode_size)
+        self.episode_end_index = self.current_index + self.episode_size
+        
+        # Set the current prices
+        self.close_price = self.data['close'].iloc[self.current_index]
+        
         self.buying_power = self.init_bankroll
         self.net_worth = self.buying_power
-        self.current_day = self.lookback_period
         self.shares_held = []
         self.total_profit = 0
         
         self.update_array_observations()
 
         return self.observation_space
-    
+        
+
     def get_observation_states(self):
         return self.observation_space
+        
+    def update_net_worth(self):
+        self.net_worth = self.buying_power + self.close_price*len(self.shares_held)
     
+    def is_done(self):
+        return self.current_index >= self.episode_end_index
     
