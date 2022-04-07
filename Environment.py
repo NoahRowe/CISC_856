@@ -24,9 +24,9 @@ class cryptoTrade(gym.Env):
         self.lookback_period = 10 # Observation range
         
         # Define core features
-        self.dim_2_features = ["open", "high", "low",  "close", "volume"]
+        self.dim_2_features = ["open", "high", "low",  "close"]
         self.dim_1_features = ["num_shares", "buying_power", "net_worth", 
-                               "avg_held_share_price", "held_shares_value"]
+                               "avg_held_share_price", "held_shares_value", "first_bought_price"]
         
         self.raw_data = pd.read_pickle(data_path)
         self.preprocess_data()
@@ -42,20 +42,23 @@ class cryptoTrade(gym.Env):
 
         
     def preprocess_data(self):
+        '''
+        Currently only used to init the columns. preprocessing is done again after scalign 
+        '''
         
-        data = self.raw_data
+        data = self.raw_data.copy()
         
         # Define the columns we want to add
         column_vals = self.dim_2_features
-        window_vals = [5, 10, 100, 500, 3600] # In minutes
+        window_vals = [5, 10, 15, 20] # In minutes
         
         for col, window in itertools.product(column_vals, window_vals):
             # Add moving average of all columns
             data, new_feature = add_moving_mean(data, col, window)
             self.dim_2_features.append(new_feature)
             # Add moving max of all columns
-            data, new_feature = add_moving_min(data, col, window)
-            self.dim_2_features.append(new_feature)
+#             data, new_feature = add_moving_min(data, col, window)
+#             self.dim_2_features.append(new_feature)
             # Add moving min of all columns
             data, new_feature = add_moving_max(data, col, window)
             self.dim_2_features.append(new_feature)
@@ -69,7 +72,11 @@ class cryptoTrade(gym.Env):
     def step(self, raw_action):
         
         # Update the pricing variables
-        self.close_price = self.data['close'].iloc[self.current_index]
+        self.scaled_price = self.scaled_data['close'].iloc[self.current_index]
+        self.real_price = self.scaled_price * self.scaling_values["close"]
+        
+        self.old_scaled_price = self.scaled_data['close'].iloc[self.current_index-1]
+        self.old_real_price = self.old_scaled_price * self.scaling_values["close"]
 
         # Map the action to num of shares
         action = self.action_space[int(raw_action)]
@@ -77,9 +84,11 @@ class cryptoTrade(gym.Env):
         # Make sure it is a valid action
         valid_action = self.get_valid_action(action)
         
-        # Buy/sell shares and calculate profit
-        profit = self.execute_action(valid_action)
-        self.total_profit += profit
+        # Buy/sell shares
+        self.execute_action(valid_action)
+        
+        # Determine reward from this action
+        reward = self.calculate_reward(valid_action)
         
         # Update net worth
         self.update_net_worth()
@@ -91,15 +100,15 @@ class cryptoTrade(gym.Env):
         # Check if done
         done = self.is_done()
         
-        return valid_action, self.observation_space, self.total_profit, done
+        return valid_action, self.observation_space, reward, done
 
     
     def get_valid_action(self, action):
         
         # Trying to buy shares
         if action>0:
-            if self.close_price*action > self.buying_power: 
-                return int(self.buying_power//self.close_price)
+            if self.real_price*action > self.buying_power: 
+                return int(self.buying_power//self.real_price)
 
         elif action<0:
             if len(self.shares_held) < np.abs(action):
@@ -112,24 +121,29 @@ class cryptoTrade(gym.Env):
         # Have already checked that the given action is valid
         # Will also return the reward (sell_price-buy_price)
 
-        self.buying_power -= self.close_price*action
+        self.buying_power -= self.real_price*action
         
         if action > 0:
             #### BUY ####
             for _ in range(action):
-                self.shares_held.append(self.close_price)
-            return 0
+                self.shares_held.append(self.scaled_price)
             
         elif action < 0:
             #### SELL ####
             purchase_price = 0
             for _ in range(np.abs(action)):
-                purchase_price += self.shares_held.pop(0)
-            return self.close_price*np.abs(action) - purchase_price # Scaled profit
-                
-        else:
-            #### NOTHING ####
-            return 0
+                self.shares_held.pop(0)
+
+
+    def calculate_reward(self, action):
+        
+        num_shares_kept = len(self.shares_held)
+        
+        # Profit from holding
+        old_value = num_shares_kept*self.old_real_price
+        new_value = num_shares_kept*self.real_price
+        
+        return new_value-old_value
 
 
     def update_array_observations(self):
@@ -153,14 +167,32 @@ class cryptoTrade(gym.Env):
         self.dim_1_observation_space[1] = self.buying_power/self.init_bankroll
         self.dim_1_observation_space[2] = self.net_worth/self.init_bankroll
         self.dim_1_observation_space[3] = np.mean(self.shares_held) if len(self.shares_held)>0 else 0
-        self.dim_1_observation_space[4] = len(self.shares_held) * self.close_price
+        self.dim_1_observation_space[4] = len(self.shares_held) * self.scaled_price
+        self.dim_1_observation_space[5] = self.shares_held[0] if len(self.shares_held)>0 else 0
 
 
     def update_dim_2_observations(self):
         
         start_index, end_index = self.current_index-self.lookback_period, self.current_index
         for i, feature in enumerate(self.dim_2_features):
-            self.dim_2_observation_space[i] = self.data[feature].iloc[start_index:end_index].values
+            self.dim_2_observation_space[i] = self.scaled_data[feature].iloc[start_index:end_index].values
+
+            
+    def scale_data(self):
+        
+        unscaled_columns = ['Date', "Volume"]
+        scaled_data = self.data.copy()
+        scaling_values = {}
+        for column in scaled_data.columns:
+            if column not in unscaled_columns:
+                if scaled_data[column].iloc[self.current_index]!=0:
+                    scaling_values[column] = scaled_data[column].iloc[self.current_index]
+                    scaled_data[column] = scaled_data[column]/scaling_values[column]
+                else:
+                    scaling_values[column] = 1
+    
+        self.scaled_data = scaled_data
+        self.scaling_values = scaling_values
 
     
     def reset(self):
@@ -169,8 +201,15 @@ class cryptoTrade(gym.Env):
         self.current_index = np.random.randint(self.lookback_period, len(self.data)-self.episode_size)
         self.episode_end_index = self.current_index + self.episode_size
         
-        # Set the current prices
-        self.close_price = self.data['close'].iloc[self.current_index]
+        # Scale the data
+        self.scale_data()
+        
+        # Set the prices
+        self.scaled_price = self.scaled_data['close'].iloc[self.current_index]
+        self.real_price = self.scaled_price * self.scaling_values["close"]
+        
+        self.old_scaled_price = self.scaled_data['close'].iloc[self.current_index-1]
+        self.old_real_price = self.scaled_price * self.scaling_values["close"]
         
         self.buying_power = self.init_bankroll
         self.net_worth = self.buying_power
@@ -186,7 +225,7 @@ class cryptoTrade(gym.Env):
         return self.observation_space
         
     def update_net_worth(self):
-        self.net_worth = self.buying_power + self.close_price*len(self.shares_held)
+        self.net_worth = self.buying_power + self.real_price*len(self.shares_held)
     
     def is_done(self):
         return self.current_index >= self.episode_end_index

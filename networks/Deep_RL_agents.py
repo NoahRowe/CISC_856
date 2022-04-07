@@ -1,9 +1,11 @@
 import tensorflow as tf
 from tensorflow.keras import layers
 
+########################################################################
+############################ AGENT FUNCTIONS ###########################
+########################################################################
+
 def RNN_agent(observation_space, action_space):
-    
-    init = tf.keras.initializers.he_uniform(seed=None)
     
     # Convert input to a ragged tensor
     observation_space_tensor = convet_to_ragged_tensor(observation_space)
@@ -13,18 +15,29 @@ def RNN_agent(observation_space, action_space):
     
     model = tf.keras.Sequential([
         tf.keras.layers.Input(shape=[None, max_seq], dtype=tf.float32, ragged=True),
-        tf.keras.layers.LSTM(64, kernel_initializer=init),
-        tf.keras.layers.Dense(len(action_space), activation='linear', kernel_initializer=init)
+        tf.keras.layers.LSTM(64),
+        tf.keras.layers.Dense(len(action_space), activation='linear')
     ])
     
     # Can also use Huber loss?
     model.compile(loss=tf.keras.losses.CategoricalCrossentropy(from_logits=False),
-                  optimizer=tf.keras.optimizers.Adam(1e-4),
+                  optimizer=tf.keras.optimizers.Adam(5e-4),
                   metrics=['accuracy'])
     return model
 
 
-#### WILL ADD DNN AGENT HERE ####
+def DNN_agent(observation_space, action_space):
+
+    model = tf.keras.Sequential([
+        tf.keras.Input(shape=(len(observation_space),)),
+        tf.keras.layers.Dense(len(action_space), activation='linear')
+    ])
+    
+    # Can also use Huber loss?
+    model.compile(loss=tf.keras.losses.CategoricalCrossentropy(from_logits=False),
+                  optimizer=tf.keras.optimizers.Adam(5e-4),
+                  metrics=['accuracy'])
+    return model
 
 
 ########################################################################
@@ -47,3 +60,20 @@ def convet_to_ragged_tensor(obs, single=True):
                     obs[i][j] = list([value])
 
         return tf.ragged.constant(obs)
+    
+def convert_to_1d(obs, single=True):
+    if single:
+        return [[x[0] if isinstance(x, list) else x for x in obs]]
+    else:
+        new_x = []
+        for row in obs:
+            new_x.append([x[0] if isinstance(x, list) else x for x in row])
+
+        return new_x
+
+
+
+
+
+
+
